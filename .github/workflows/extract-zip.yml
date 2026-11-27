@@ -5,7 +5,6 @@ on:
 
 permissions:
   contents: write
-  workflows: write
 
 jobs:
   extract:
@@ -16,6 +15,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: main
+          persist-credentials: false
 
       - name: Extract source ZIP
         run: |
@@ -36,8 +36,6 @@ jobs:
           with zipfile.ZipFile(archive) as z:
               z.extractall(temp)
 
-          # Jika ZIP memiliki satu folder utama,
-          # gunakan isi folder tersebut.
           entries = os.listdir(temp)
 
           if len(entries) == 1 and os.path.isdir(
@@ -45,10 +43,12 @@ jobs:
           ):
               temp = os.path.join(temp, entries[0])
 
-          # Salin seluruh isi ZIP ke repository.
           for name in os.listdir(temp):
               source = os.path.join(temp, name)
               target = os.path.join(".", name)
+
+              if name == ".github":
+                  continue
 
               if os.path.isdir(source):
                   shutil.copytree(
@@ -59,12 +59,14 @@ jobs:
               else:
                   shutil.copy2(source, target)
 
-          print("Ekstraksi ZIP berhasil.")
+          print("Ekstraksi berhasil.")
 
           PY
 
-      - name: Remove uploaded ZIP
-        run: rm -f source.zip
+      - name: Remove temporary files
+        run: |
+          rm -f source.zip
+          rm -rf _zip_extracted
 
       - name: Commit extracted files
         run: |
@@ -75,7 +77,4 @@ jobs:
 
           if ! git diff --cached --quiet; then
             git commit -m "Extract Android project from ZIP"
-            git push origin main
-          else
-            echo "Tidak ada perubahan untuk disimpan."
           fi
