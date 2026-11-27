@@ -18,10 +18,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Check ZIP source
+      - name: Verify ZIP source
         run: |
           if [ ! -f source.zip ]; then
-            echo "File source.zip tidak ditemukan di root repository."
+            echo "ERROR: source.zip tidak ditemukan."
             exit 1
           fi
 
@@ -29,23 +29,25 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/android-source"
 
-          unzip -q source.zip -d "$RUNNER_TEMP/android-source"
+          unzip -q source.zip \
+            -d "$RUNNER_TEMP/android-source"
 
           SETTINGS_FILE=$(find "$RUNNER_TEMP/android-source" \
             -type f \
-            \( -name settings.gradle -o -name settings.gradle.kts \) \
+            \( -name settings.gradle \
+            -o -name settings.gradle.kts \) \
             -print -quit)
 
           if [ -z "$SETTINGS_FILE" ]; then
-            echo "File settings.gradle atau settings.gradle.kts tidak ditemukan."
-            echo "Periksa isi source.zip."
+            echo "ERROR: File settings.gradle tidak ditemukan."
             exit 1
           fi
 
           PROJECT_DIR=$(dirname "$SETTINGS_FILE")
 
-          echo "Proyek Android ditemukan di: $PROJECT_DIR"
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+          echo "Project ditemukan: $PROJECT_DIR"
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -53,17 +55,34 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android SDK packages
+      - name: Configure Android SDK
         run: |
-          sdkmanager --install \
+          echo "ANDROID_HOME=$ANDROID_HOME"
+
+          if [ -z "$ANDROID_HOME" ]; then
+            echo "ERROR: Android SDK tidak ditemukan."
+            exit 1
+          fi
+
+          SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" \
+            -type f -name sdkmanager \
+            -print -quit)
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "ERROR: sdkmanager tidak ditemukan."
+            exit 1
+          fi
+
+          echo "SDK Manager: $SDKMANAGER"
+
+          chmod +x "$SDKMANAGER"
+
+          yes | "$SDKMANAGER" --licenses
+
+          "$SDKMANAGER" --install \
             "platforms;android-35" \
             "build-tools;35.0.0" \
             "platform-tools"
-
-          yes | sdkmanager --licenses
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -75,17 +94,17 @@ jobs:
           cd "$PROJECT_DIR"
 
           if [ ! -d app ]; then
-            echo "Folder app tidak ditemukan."
+            echo "ERROR: Folder app tidak ditemukan."
             exit 1
           fi
 
           if [ ! -f app/build.gradle.kts ] && \
              [ ! -f app/build.gradle ]; then
-            echo "File Gradle aplikasi tidak ditemukan."
+            echo "ERROR: Konfigurasi Gradle aplikasi tidak ditemukan."
             exit 1
           fi
 
-          echo "Struktur proyek Android ditemukan."
+          echo "Struktur proyek Android valid."
 
       - name: Build Release APK
         run: |
@@ -97,13 +116,11 @@ jobs:
 
       - name: Verify Release APK
         run: |
-          cd "$PROJECT_DIR"
-
-          APK=$(find app/build/outputs/apk/release \
+          APK=$(find "$PROJECT_DIR/app/build/outputs/apk/release" \
             -type f -name '*.apk' -print -quit)
 
           if [ -z "$APK" ]; then
-            echo "APK release tidak ditemukan."
+            echo "ERROR: APK release tidak ditemukan."
             exit 1
           fi
 
