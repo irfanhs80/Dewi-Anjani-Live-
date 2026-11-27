@@ -18,6 +18,34 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Extract Android project ZIP
+        run: |
+          set -e
+
+          ZIP_FILE=$(find . -maxdepth 1 -type f -iname "*.zip" -print -quit)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "File ZIP tidak ditemukan di root repository."
+            exit 1
+          fi
+
+          mkdir -p extracted
+          unzip -o "$ZIP_FILE" -d extracted
+
+          SETTINGS_FILE=$(find extracted -type f \
+            \( -name "settings.gradle.kts" -o -name "settings.gradle" \) \
+            -print -quit)
+
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "File settings.gradle tidak ditemukan di dalam ZIP."
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$SETTINGS_FILE")
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+          echo "Proyek Android ditemukan di: $PROJECT_DIR"
+
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
@@ -32,6 +60,7 @@ jobs:
           sdkmanager --install \
             "platforms;android-35" \
             "build-tools;35.0.0"
+
           yes | sdkmanager --licenses
 
       - name: Set up Gradle
@@ -40,25 +69,24 @@ jobs:
           gradle-version: '8.9'
 
       - name: Check Android project
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          if [ ! -f settings.gradle.kts ] && [ ! -f settings.gradle ]; then
-            echo "File settings.gradle.kts atau settings.gradle tidak ditemukan."
-            echo "Pastikan source code Android sudah berada di root repository."
-            exit 1
-          fi
-
           if [ ! -f app/build.gradle.kts ] && [ ! -f app/build.gradle ]; then
             echo "File build.gradle.kts atau build.gradle di folder app tidak ditemukan."
             exit 1
           fi
 
+          echo "Struktur proyek Android ditemukan."
+
       - name: Build Release APK
-        run: gradle --no-daemon assembleRelease
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          gradle --no-daemon assembleRelease
 
       - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
           name: Dewi-Anjani-Live-Release
-          path: app/build/outputs/apk/release/*.apk
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 14
