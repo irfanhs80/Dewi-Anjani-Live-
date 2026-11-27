@@ -32,10 +32,25 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      
       - name: Build APK
         run: |
+          GRADLEW_PATH=$(find . -type f -name gradlew -not -path './.git/*' -print -quit)
+
+          if [ -z "$GRADLEW_PATH" ]; then
+            echo "ERROR: File gradlew tidak ditemukan."
+            echo "Periksa apakah proyek Android sudah diekstrak ke repository."
+            exit 1
+          fi
+
+          echo "Gradle wrapper ditemukan: $GRADLEW_PATH"
+
+          PROJECT_DIR=$(dirname "$GRADLEW_PATH")
+          cd "$PROJECT_DIR"
+
           chmod +x ./gradlew
           ./gradlew assembleDebug
+
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
