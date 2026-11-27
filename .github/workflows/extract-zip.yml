@@ -1,0 +1,80 @@
+name: Extract ZIP into Repository
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Extract source ZIP
+        run: |
+          python3 - <<'PY'
+          import os
+          import shutil
+          import zipfile
+
+          archive = "source.zip"
+          temp = "_zip_extracted"
+
+          if not os.path.isfile(archive):
+              raise SystemExit("File source.zip tidak ditemukan.")
+
+          shutil.rmtree(temp, ignore_errors=True)
+          os.makedirs(temp)
+
+          with zipfile.ZipFile(archive) as z:
+              z.extractall(temp)
+
+          # Jika ZIP memiliki satu folder utama,
+          # gunakan isi folder tersebut.
+          entries = os.listdir(temp)
+
+          if len(entries) == 1 and os.path.isdir(
+              os.path.join(temp, entries[0])
+          ):
+              temp = os.path.join(temp, entries[0])
+
+          # Salin seluruh isi ZIP ke repository.
+          for name in os.listdir(temp):
+              source = os.path.join(temp, name)
+              target = os.path.join(".", name)
+
+              if os.path.isdir(source):
+                  shutil.copytree(
+                      source,
+                      target,
+                      dirs_exist_ok=True
+                  )
+              else:
+                  shutil.copy2(source, target)
+
+          print("Ekstraksi ZIP berhasil.")
+
+          PY
+
+      - name: Remove uploaded ZIP
+        run: rm -f source.zip
+
+      - name: Commit extracted files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          if ! git diff --cached --quiet; then
+            git commit -m "Extract Android project from ZIP"
+            git push origin main
+          else
+            echo "Tidak ada perubahan untuk disimpan."
+          fi
