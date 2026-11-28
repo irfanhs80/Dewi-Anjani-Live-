@@ -1,124 +1,259 @@
+
 name: Build Dewi Anjani Live Release APK
 
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches:
+      - main
 
 permissions:
   contents: read
 
 jobs:
   build:
+    name: Build and Sign Release APK
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
+      # 1. Mengambil repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 2. Menyiapkan Java 17
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Validate and extract source ZIP
+      # 3. Memeriksa dan mengekstrak source.zip
+      - name: Extract Android project ZIP
         shell: bash
         run: |
           set -euo pipefail
-          # Upload the Android project ZIP to the repository root with this exact name.
-          ZIP_PATH="source.zip"
+
+          ZIP_PATH="$GITHUB_WORKSPACE/source.zip"
+
           if [[ ! -f "$ZIP_PATH" ]]; then
-            echo "ERROR: source.zip tidak ditemukan di root repository. Upload paket proyek Android sebagai source.zip."
+            echo "::error::source.zip tidak ditemukan di root repository."
             exit 1
           fi
 
-          rm -rf _project
-          mkdir -p _project
+          if ! unzip -tq "$ZIP_PATH" >/dev/null; then
+            echo "::error::source.zip rusak atau tidak valid."
+            exit 1
+          fi
+
+          rm -rf _project android-project
+          mkdir -p _project android-project
+
           unzip -q "$ZIP_PATH" -d _project
 
-          # Support ZIPs containing the project directly or inside one/more parent folders.
-          mapfile -t SETTINGS_FILES < <(find _project -type f \( -name settings.gradle.kts -o -name settings.gradle \) -print)
+          # Mencari root proyek Gradle di dalam ZIP.
+          mapfile -t SETTINGS_FILES < <(
+            find _project -type f \
+              \( -name settings.gradle.kts -o -name settings.gradle \) \
+              -not -path '*/.gradle/*' \
+              -not -path '*/build/*' \
+              -print
+          )
+
           if [[ ${#SETTINGS_FILES[@]} -ne 1 ]]; then
-            echo "ERROR: ZIP harus berisi tepat satu settings.gradle(.kts); ditemukan ${#SETTINGS_FILES[@]}."
+            echo "::error::ZIP harus memiliki tepat satu settings.gradle atau settings.gradle.kts."
+            echo "Ditemukan: ${#SETTINGS_FILES[@]}"
             exit 1
           fi
+
           PROJECT_ROOT="$(dirname "${SETTINGS_FILES[0]}")"
 
-          test -f "$PROJECT_ROOT/build.gradle.kts" -o -f "$PROJECT_ROOT/build.gradle" || {
-            echo "ERROR: build.gradle(.kts) tidak ditemukan pada root proyek."; exit 1;
-          }
-          test -f "$PROJECT_ROOT/app/build.gradle.kts" -o -f "$PROJECT_ROOT/app/build.gradle" || {
-            echo "ERROR: app/build.gradle(.kts) tidak ditemukan."; exit 1;
-          }
+          if [[ ! -f "$PROJECT_ROOT/app/build.gradle.kts" ]] &&
+             [[ ! -f "$PROJECT_ROOT/app/build.gradle" ]]; then
+            echo "::error::Konfigurasi Gradle modul app tidak ditemukan."
+            exit 1
+          fi
 
-          # Extract into a clean directory; do not accidentally build stale files from the repository.
-          rm -rf android-project
-          mkdir -p android-project
+          if [[ ! -f "$PROJECT_ROOT/app/src/main/AndroidManifest.xml" ]]; then
+            echo "::error::AndroidManifest.xml tidak ditemukan."
+            exit 1
+          fi
+
           cp -a "$PROJECT_ROOT"/. android-project/
+
           echo "PROJECT_DIR=$GITHUB_WORKSPACE/android-project" >> "$GITHUB_ENV"
 
-      - name: Configure Android SDK
+          echo "Struktur proyek berhasil ditemukan."
+          ls -la android-project
+
+      # 4. Menyiapkan Android SDK
+      - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install required Android SDK packages
+      # 5. Memasang paket Android SDK
+      - name: Install Android SDK packages
         shell: bash
         run: |
           set -euo pipefail
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Set up Gradle 8.9
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+
+          if [[ -z "$SDK" ]]; then
+            echo "::error::Android SDK tidak ditemukan."
+            exit 1
+          fi
+
+          # Mencari sdkmanager tanpa bergantung pada paket tools lama.
+          SDKMANAGER="$(command -v sdkmanager || true)"
+
+          if [[ -z "$SDKMANAGER" ]]; then
+            SDKMANAGER="$(find "$SDK/cmdline-tools" \
+              -type f -name sdkmanager 2>/dev/null |
+              sort -V | tail -n 1)"
+          fi
+
+          if [[ -z "$SDKMANAGER" || ! -f "$SDKMANAGER" ]]; then
+            echo "::error::sdkmanager tidak ditemukan."
+            exit 1
+          fi
+
+          # Menerima lisensi Android SDK.
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+
+          # Paket SDK modern. Tidak memasang paket lama bernama tools.
+          "$SDKMANAGER" --install \
+            "platform-tools" \
+            "platforms;android-35" \
+            "platforms;android-36" \
+            "build-tools;35.0.0" \
+            "build-tools;36.0.0"
+
+          echo "Android SDK berhasil disiapkan."
+
+      # 6. Menyiapkan Gradle
+      - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Verify project and toolchain
+      # 7. Memeriksa konfigurasi proyek
+      - name: Verify Android project
         working-directory: android-project
         shell: bash
         run: |
           set -euo pipefail
-          echo "Project root: $(pwd)"
-          grep -R -nE 'com\.android\.application.*version|com.android.tools.build:gradle' --include='*.gradle' --include='*.gradle.kts' . || true
+
+          echo "Root proyek: $(pwd)"
+          echo "Java:"
+          java -version
+
+          echo "Gradle:"
+          gradle --version
+
           test -f settings.gradle.kts -o -f settings.gradle
+
+          test -f app/build.gradle.kts -o -f app/build.gradle
+
           test -f app/src/main/AndroidManifest.xml
 
+          echo "Konfigurasi Android:"
+          grep -R -nE \
+            'compileSdk|targetSdk|minSdk|com.android.application' \
+            --include='*.gradle' \
+            --include='*.gradle.kts' \
+            . || true
+
+      # 8. Membangun APK release
       - name: Build Release APK
         working-directory: android-project
         shell: bash
         run: |
           set -euo pipefail
-          gradle --no-daemon --stacktrace assembleRelease
-          APK="$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' | head -n 1)"
-          if [[ -z "$APK" ]]; then
-            echo "ERROR: APK release tidak ditemukan."; exit 1
-          fi
-          mkdir -p "$GITHUB_WORKSPACE/release"
-          cp "$APK" "$GITHUB_WORKSPACE/release/Dewi-Anjani-Live-release-unsigned.apk"
 
-      - name: Sign APK for installation
+          # Menggunakan Gradle Wrapper jika tersedia.
+          if [[ -f gradlew ]]; then
+            chmod +x gradlew
+
+            ./gradlew \
+              --no-daemon \
+              --stacktrace \
+              assembleRelease
+          else
+            gradle \
+              --no-daemon \
+              --stacktrace \
+              assembleRelease
+          fi
+
+          # Mencari APK release.
+          APK="$(
+            find app/build/outputs/apk \
+              -type f \
+              -name '*.apk' \
+              ! -name '*unsigned*' \
+              -print 2>/dev/null |
+            sort |
+            head -n 1
+          )"
+
+          if [[ -z "$APK" ]]; then
+            echo "::error::APK release tidak ditemukan."
+            find app/build/outputs -type f -print || true
+            exit 1
+          fi
+
+          mkdir -p "$GITHUB_WORKSPACE/release"
+
+          cp "$APK" \
+            "$GITHUB_WORKSPACE/release/Dewi-Anjani-Live-release-unsigned.apk"
+
+          echo "APK berhasil dibangun."
+          ls -lh "$GITHUB_WORKSPACE/release"
+
+      # 9. Menandatangani APK
+      - name: Sign APK
         shell: bash
         run: |
           set -euo pipefail
-          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
-          APKSIGNER="$SDK/build-tools/35.0.0/apksigner"
+
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
           KEYSTORE="$RUNNER_TEMP/dewi-release.jks"
 
-          # Temporary key makes this APK installable. It is NOT suitable for updating an
-          # already-installed release signed with a different key. Use a persistent secret key for production.
+          APKSIGNER="$SDK/build-tools/35.0.0/apksigner"
+
+          if [[ ! -f "$APKSIGNER" ]]; then
+            echo "::error::apksigner tidak ditemukan."
+            exit 1
+          fi
+
+          # Kunci sementara untuk menghasilkan APK yang dapat diinstal.
+          # Untuk update aplikasi lama, gunakan kunci signing permanen.
           "$JAVA_HOME/bin/keytool" -genkeypair -noprompt \
-            -keystore "$KEYSTORE" -storepass changeit -keypass changeit \
-            -alias release -keyalg RSA -keysize 2048 -validity 10000 \
+            -keystore "$KEYSTORE" \
+            -storepass changeit \
+            -keypass changeit \
+            -alias release \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
             -dname "CN=Dewi Anjani Live, OU=Radio, O=Dewi Anjani, L=Anjani, ST=NTB, C=ID"
 
-          "$APKSIGNER" sign --ks "$KEYSTORE" --ks-pass pass:changeit \
-            --key-pass pass:changeit --ks-key-alias release \
+          "$APKSIGNER" sign \
+            --ks "$KEYSTORE" \
+            --ks-pass pass:changeit \
+            --key-pass pass:changeit \
+            --ks-key-alias release \
             --out release/Dewi-Anjani-Live-release.apk \
             release/Dewi-Anjani-Live-release-unsigned.apk
-          "$APKSIGNER" verify --verbose release/Dewi-Anjani-Live-release.apk
 
-      - name: Upload Release APK artifact
+          "$APKSIGNER" verify \
+            --verbose \
+            release/Dewi-Anjani-Live-release.apk
+
+          echo "APK berhasil ditandatangani dan diverifikasi."
+
+      # 10. Mengunggah APK
+      - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
           name: Dewi-Anjani-Live-Release
